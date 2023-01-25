@@ -1,7 +1,7 @@
 import '@tensorflow/tfjs-backend-webgl';
 import '@tensorflow/tfjs-backend-webgpu';
 import * as mpPose from '@mediapipe/pose';
-
+import { Camera } from "@mediapipe/camera_utils";
 import * as tfjsWasm from '@tensorflow/tfjs-backend-wasm';
 
 tfjsWasm.setWasmPaths(
@@ -10,11 +10,10 @@ tfjsWasm.setWasmPaths(
 
 import * as posedetection from '@tensorflow-models/pose-detection';
 
-import {Camera} from './camera';
 import {setupDatGui} from './option_panel';
-import {STATE} from './params';
+import {STATE, VIDEO_SIZE} from './params';
 import {setupStats} from './stats_panel';
-import {setBackendAndEnvFlags} from './util';
+import {setBackendAndEnvFlags, drawResults} from './util';
 
 let detector, camera, stats;
 let startInferenceTime, numInferences = 0;
@@ -65,11 +64,6 @@ async function createDetector() {
 }
 
 async function checkGuiUpdate() {
-  if (STATE.isTargetFPSChanged || STATE.isSizeOptionChanged) {
-    camera = await Camera.setupCamera(STATE.camera);
-    STATE.isTargetFPSChanged = false;
-    STATE.isSizeOptionChanged = false;
-  }
 
   if (STATE.isModelChanged || STATE.isFlagChanged || STATE.isBackendChanged) {
     STATE.isModelChanged = true;
@@ -117,15 +111,7 @@ function endEstimatePosesStats() {
   }
 }
 
-async function renderResult() {
-  if (camera.video.readyState < 2) {
-    await new Promise((resolve) => {
-      camera.video.onloadeddata = () => {
-        resolve(video);
-      };
-    });
-  }
-
+async function renderResult(video) {
   let poses = null;
 
   // Detector can be null if initialization failed (for example when loading
@@ -138,7 +124,7 @@ async function renderResult() {
     // contain a model that doesn't provide the expected output.
     try {
       poses = await detector.estimatePoses(
-          camera.video,
+          video,
           {maxPoses: STATE.modelConfig.maxPoses, flipHorizontal: false});
     } catch (error) {
       detector.dispose();
@@ -149,25 +135,30 @@ async function renderResult() {
     endEstimatePosesStats();
   }
 
-  camera.drawCtx();
-
+  const canvasElement = document.getElementById('output');
+  const canvasCtx = canvasElement.getContext('2d');
+  canvasElement.width = VIDEO_SIZE[STATE.camera.sizeOption].width;
+  canvasElement.height = VIDEO_SIZE[STATE.camera.sizeOption].height;
+  canvasCtx.save();
+  canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
   // The null check makes sure the UI is not in the middle of changing to a
   // different model. If during model change, the result is from an old model,
   // which shouldn't be rendered.
   if (poses && poses.length > 0 && !STATE.isModelChanged) {
-    camera.drawResults(poses);
+    drawResults(canvasCtx,poses);
   }
+  canvasCtx.restore();
 }
 
-async function renderPrediction() {
-  await checkGuiUpdate();
+// async function renderPrediction(video) {
+//   await checkGuiUpdate();
 
-  if (!STATE.isModelChanged) {
-    await renderResult();
-  }
+//   if (!STATE.isModelChanged) {
+//     await renderResult(video);
+//   }
 
-  rafId = requestAnimationFrame(renderPrediction);
-};
+//   rafId = requestAnimationFrame(renderPrediction);
+// };
 
 async function app() {
   // Gui content will change depending on which model is in the query string.
@@ -181,13 +172,20 @@ async function app() {
 
   stats = setupStats();
 
-  camera = await Camera.setupCamera(STATE.camera);
-
   await setBackendAndEnvFlags(STATE.flags, STATE.backend);
 
   detector = await createDetector();
 
-  renderPrediction();
+  camera = new Camera(video, {
+    onFrame: async () => {
+        await checkGuiUpdate();
+        await renderResult(video);
+    },
+    facingMode:'user',
+    width: VIDEO_SIZE[STATE.camera.sizeOption].width,
+    height: VIDEO_SIZE[STATE.camera.sizeOption].height
+  });
+  camera.start();
 };
 
 app();
